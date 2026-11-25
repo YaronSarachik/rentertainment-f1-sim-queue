@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rentertainment F1 Simulator</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="wrap stack">
+  <div>
+    <h1 id="qname">Rentertainment F1 Simulator</h1>
+    <p class="muted" id="status">Loading…</p>
+  </div>
+
+  <form id="f" class="card stack" autocomplete="on">
+    <div class="row">
+      <div class="grow">
+        <label for="firstName">First name</label>
+        <input id="firstName" name="firstName" maxlength="40" required autocomplete="given-name">
+      </div>
+      <div class="grow">
+        <label for="lastName">Last name</label>
+        <input id="lastName" name="lastName" maxlength="40" required autocomplete="family-name">
+      </div>
+    </div>
+    <div>
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" inputmode="email" maxlength="120" required autocomplete="email">
+    </div>
+    <div>
+      <label for="phone">Mobile number</label>
+      <div class="row">
+        <select id="countryCode" name="countryCode" aria-label="Country code" style="width:auto;flex:none">
+          <option value="+61" selected>🇦🇺 +61</option>
+          <option value="+64">🇳🇿 +64</option>
+          <option value="+1">🇺🇸 +1</option>
+          <option value="+1">🇨🇦 +1</option>
+          <option value="+44">🇬🇧 +44</option>
+          <option value="+353">🇮🇪 +353</option>
+          <option value="+65">🇸🇬 +65</option>
+          <option value="+60">🇲🇾 +60</option>
+          <option value="+62">🇮🇩 +62</option>
+          <option value="+63">🇵🇭 +63</option>
+          <option value="+66">🇹🇭 +66</option>
+          <option value="+84">🇻🇳 +84</option>
+          <option value="+852">🇭🇰 +852</option>
+          <option value="+86">🇨🇳 +86</option>
+          <option value="+886">🇹🇼 +886</option>
+          <option value="+81">🇯🇵 +81</option>
+          <option value="+82">🇰🇷 +82</option>
+          <option value="+91">🇮🇳 +91</option>
+          <option value="+971">🇦🇪 +971</option>
+          <option value="+27">🇿🇦 +27</option>
+          <option value="+33">🇫🇷 +33</option>
+          <option value="+49">🇩🇪 +49</option>
+          <option value="+39">🇮🇹 +39</option>
+          <option value="+34">🇪🇸 +34</option>
+          <option value="+31">🇳🇱 +31</option>
+          <option value="+41">🇨🇭 +41</option>
+          <option value="+46">🇸🇪 +46</option>
+          <option value="+55">🇧🇷 +55</option>
+          <option value="+52">🇲🇽 +52</option>
+        </select>
+        <input id="phone" name="phone" class="grow" type="tel" inputmode="tel" maxlength="20" required autocomplete="tel-national" placeholder="0412 345 678" style="min-width:0">
+      </div>
+      <div class="muted" style="font-size:.85rem;margin-top:4px">We'll text you when you're next and when it's your turn.</div>
+    </div>
+    <div>
+      <label for="track">Track</label>
+      <select id="track" name="track" required>
+        <option value="" disabled selected>Choose a track</option>
+        <option>Australia</option><option>Las Vegas</option><option>Miami</option><option>Austin</option>
+      </select>
+    </div>
+    <div>
+      <label for="transmission">Transmission</label>
+      <select id="transmission" name="transmission" required>
+        <option value="" disabled selected>Choose transmission</option>
+        <option value="Auto">Auto</option><option value="Manual">Manual</option>
+      </select>
+    </div>
+    <div class="err" id="err" role="alert"></div>
+    <button class="block" id="btn" type="submit">Get my ticket</button>
+  </form>
+  <p class="muted center" style="font-size:.85rem">Keep this page open — it updates live and alerts you when it's your turn.</p>
+</main>
+<script>
+// If this phone already holds an active ticket, go straight back to it.
+(async () => {
+  const saved = localStorage.getItem('queueTicket');
+  if (saved) {
+    try {
+      const r = await fetch('/api/tickets/' + saved);
+      if (r.ok) {
+        const t = await r.json();
+        if (t.status === 'waiting' || t.status === 'called') return location.replace('/t/' + saved);
+      }
+    } catch (_) {}
+    localStorage.removeItem('queueTicket');
+  }
+})();
+
+const es = new EventSource('/events');
+es.onmessage = e => {
+  const s = JSON.parse(e.data);
+  document.getElementById('qname').textContent = s.queueName;
+  document.title = 'Join – ' + s.queueName;
+  const n = s.waitingNumbers.length;
+  const btn = document.getElementById('btn');
+  if (!s.open) {
+    document.getElementById('status').textContent = 'The queue is closed right now.';
+    btn.disabled = true;
+  } else {
+    const mins = Math.round(n * s.avgServiceSec / 60);
+    document.getElementById('status').textContent =
+      n === 0 ? 'No one waiting — you’ll be next.' :
+      `${n} ${n === 1 ? 'person' : 'people'} ahead · about ${Math.max(1, mins)} min`;
+    btn.disabled = false;
+  }
+};
+
+document.getElementById('countryCode').addEventListener('change', e => {
+  document.getElementById('phone').placeholder = e.target.value === '+61' ? '0412 345 678' : 'Mobile number';
+});
+
+document.getElementById('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('btn'), err = document.getElementById('err');
+  btn.disabled = true; err.textContent = '';
+  try {
+    const body = Object.fromEntries(new FormData(e.target));
+    const r = await fetch('/api/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const t = await r.json();
+    if (!r.ok) throw new Error(t.error || 'Something went wrong');
+    localStorage.setItem('queueTicket', t.id);
+    location.href = '/t/' + t.id;
+  } catch (x) {
+    err.textContent = x.message; btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

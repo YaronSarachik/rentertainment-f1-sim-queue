@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Queue display</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { height: 100vh; overflow: hidden; }
+  .screen { display: grid; grid-template-columns: 1.4fr 1fr; gap: 3vw; height: 100vh; padding: 4vw; }
+  .serving h2, .side h2 { font-size: 2vw; margin: 0 0 1.5vw; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+  .now { font-size: 18vw; font-weight: 800; line-height: .9; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+  .counter { font-size: 3.2vw; margin-top: 1vw; }
+  .others { display: flex; gap: 1.5vw; margin-top: 3vw; flex-wrap: wrap; }
+  .others .card { font-size: 2.6vw; padding: 1vw 2vw; font-weight: 700; }
+  .others .card small { display: block; font-size: 1.2vw; color: var(--muted); font-weight: 500; }
+  .side { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  .qr { background: #fff; padding: 1.5vw; border-radius: 1.5vw; width: min(28vw, 60vh); }
+  .qr img { width: 100%; display: block; }
+  .scan { font-size: 2.6vw; font-weight: 700; margin-top: 2vw; }
+  .meta { font-size: 1.6vw; color: var(--muted); margin-top: .8vw; }
+  .flash { animation: flash 1s ease-in-out 3; }
+  @keyframes flash { 50% { color: var(--accent); transform: scale(1.04); } }
+  @media (max-aspect-ratio: 1/1) {
+    body { overflow: auto; height: auto; }
+    .screen { grid-template-columns: 1fr; height: auto; }
+    .now { font-size: 36vw; } .qr { width: 60vw; } .scan { font-size: 6vw; } .meta { font-size: 4vw; }
+    .serving h2, .side h2 { font-size: 4vw; } .counter { font-size: 6vw; }
+  }
+</style>
+</head>
+<body>
+<div class="screen">
+  <section class="serving">
+    <h2>Now serving</h2>
+    <div class="now" id="now">–</div>
+    <div class="counter" id="counter"></div>
+    <div class="others" id="others"></div>
+  </section>
+  <section class="side">
+    <div class="qr"><img id="qr" src="/qr.svg" alt="QR code to join the queue"></div>
+    <div class="scan">Scan to join the queue</div>
+    <div class="meta" id="url"></div>
+    <div class="meta" id="waiting"></div>
+  </section>
+</div>
+<script>
+fetch('/api/info').then(r => r.json()).then(i => {
+  document.getElementById('url').textContent = i.joinUrl.replace(/^https?:\/\//, '');
+});
+let audioCtx;
+document.body.addEventListener('click', () => { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); }, { once: true });
+function ding() {
+  if (!audioCtx) return;
+  [[660, 0], [880, .25]].forEach(([f, t]) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = f; o.connect(g); g.connect(audioCtx.destination);
+    g.gain.setValueAtTime(.0001, audioCtx.currentTime + t);
+    g.gain.exponentialRampToValueAtTime(.5, audioCtx.currentTime + t + .02);
+    g.gain.exponentialRampToValueAtTime(.0001, audioCtx.currentTime + t + .6);
+    o.start(audioCtx.currentTime + t); o.stop(audioCtx.currentTime + t + .65);
+  });
+}
+const es = new EventSource('/events');
+es.onmessage = e => {
+  const s = JSON.parse(e.data);
+  const [cur, ...rest] = s.nowServing;
+  const now = document.getElementById('now');
+  now.textContent = cur ? cur.number : '–';
+  document.getElementById('counter').textContent = cur && cur.counter ? `→ ${cur.counter}` : '';
+  document.getElementById('others').innerHTML = rest.map(t =>
+    `<div class="card">${t.number}<small>${t.counter ? String(t.counter).replace(/[<>&]/g, '') : ''}</small></div>`).join('');
+  const n = s.waitingNumbers.length;
+  document.getElementById('waiting').textContent = !s.open ? 'Queue closed' : n === 0 ? 'No wait right now' : `${n} waiting · ~${Math.max(1, Math.round(n * s.avgServiceSec / 60))} min`;
+  if (s.chime) { now.classList.remove('flash'); void now.offsetWidth; now.classList.add('flash'); ding(); }
+};
+</script>
+</body>
+</html>

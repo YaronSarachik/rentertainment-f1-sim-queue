@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your ticket</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="wrap stack" id="app">
+  <p class="muted">Loading your ticket…</p>
+</main>
+<script>
+const id = location.pathname.split('/').pop();
+const app = document.getElementById('app');
+let ticket = null, lastAlert = 0, soundOn = false, audioCtx = null;
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtWait = s => s < 60 ? 'Under 1 min' : `~${Math.round(s / 60)} min`;
+
+function beep() {
+  if (!soundOn || !audioCtx) return;
+  [0, .35, .7].forEach(t => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = 880; o.connect(g); g.connect(audioCtx.destination);
+    g.gain.setValueAtTime(.0001, audioCtx.currentTime + t);
+    g.gain.exponentialRampToValueAtTime(.4, audioCtx.currentTime + t + .02);
+    g.gain.exponentialRampToValueAtTime(.0001, audioCtx.currentTime + t + .3);
+    o.start(audioCtx.currentTime + t); o.stop(audioCtx.currentTime + t + .32);
+  });
+}
+
+function alertCalled(t) {
+  const key = t.recallAt || t.calledAt;
+  if (!key || key === lastAlert) return;
+  lastAlert = key;
+  if (navigator.vibrate) navigator.vibrate([400, 150, 400, 150, 400]);
+  beep();
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification("It's your turn!", { body: `Ticket #${t.number}` + (t.counter ? ` — go to ${t.counter}` : ''), tag: 'queue' }); } catch (_) {}
+  }
+}
+
+async function enableAlerts() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume(); soundOn = true;
+  } catch (_) {}
+  if ('Notification' in window && Notification.permission === 'default') {
+    try { await Notification.requestPermission(); } catch (_) {}
+  }
+  render();
+}
+
+function render() {
+  const t = ticket;
+  if (!t) return;
+  document.title = t.status === 'called' ? `🔔 Your turn! #${t.number}` : `#${t.number} – ${t.queueName}`;
+  let body = '';
+  if (t.status === 'waiting') {
+    body = `
+      <div class="card center stack">
+        <div class="muted">Your number</div>
+        <div class="ticket-num">${t.number}</div>
+        <div>Hi ${esc(t.name)} — you're in the queue.</div>
+        ${t.track ? `<div><span class="pill">${esc(t.track)}</span> <span class="pill">${esc(t.transmission)}</span></div>` : ''}
+      </div>
+      <div class="stats">
+        <div class="card"><div class="stat">${t.ahead}</div><div class="muted">ahead of you</div></div>
+        <div class="card"><div class="stat" style="font-size:1.5rem;line-height:2.9rem">${t.ahead === 0 ? 'You’re next' : fmtWait(t.estWaitSec)}</div><div class="muted">estimated wait</div></div>
+      </div>
+      ${soundOn ? '<p class="muted center">🔔 Alerts on. Keep this page open.</p>'
+                : '<button class="block ghost" id="alerts">🔔 Turn on sound &amp; alerts</button>'}
+      <button class="block danger" id="leave">Leave the queue</button>`;
+  } else if (t.status === 'called') {
+    body = `
+      <div class="card called-banner center stack">
+        <div style="font-weight:700;font-size:1.3rem">It's your turn!</div>
+        <div class="ticket-num">${t.number}</div>
+        ${t.counter ? `<div style="font-size:1.4rem">Please go to <b>${esc(t.counter)}</b></div>` : ''}
+      </div>`;
+  } else {
+    const msg = { served: 'You’ve been served. Thank you!', left: 'You left the queue.', noshow: 'Your ticket expired because you weren’t there when called.', removed: 'Your ticket was cancelled.' }[t.status] || 'This ticket is no longer active.';
+    body = `
+      <div class="card center stack">
+        <div class="muted">Ticket #${t.number}</div>
+        <div style="font-size:1.2rem">${msg}</div>
+      </div>
+      <a href="/join"><button class="block" onclick="localStorage.removeItem('queueTicket')">Join again</button></a>`;
+  }
+  app.innerHTML = `<div><h1>${esc(t.queueName)}</h1></div>` + body;
+  document.getElementById('alerts')?.addEventListener('click', enableAlerts);
+  document.getElementById('leave')?.addEventListener('click', async () => {
+    if (!confirm('Leave the queue? You will lose your place.')) return;
+    const r = await fetch(`/api/tickets/${id}/leave`, { method: 'POST' });
+    ticket = await r.json(); localStorage.removeItem('queueTicket'); render();
+  });
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/tickets/' + id);
+    if (r.status === 404) { app.innerHTML = '<div class="card">Ticket not found. <a href="/join">Join the queue</a></div>'; return; }
+    ticket = await r.json();
+    if (ticket.status === 'called') alertCalled(ticket);
+    render();
+  } catch (_) {}
+}
+
+// Live updates; also refresh when the phone wakes / tab is reopened.
+const es = new EventSource('/events');
+es.onmessage = refresh;
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+refresh();
+</script>
+</body>
+</html>

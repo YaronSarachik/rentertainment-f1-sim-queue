@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Queue staff</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .wrap { max-width: 760px; }
+  .list { margin: 0; padding: 0; list-style: none; }
+  .list li { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+  .list li:first-child { border-top: 0; }
+  .num { font-weight: 800; font-size: 1.3rem; min-width: 3ch; font-variant-numeric: tabular-nums; }
+  .who { flex: 1; min-width: 140px; }
+  .who small { display: block; color: var(--muted); }
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .big { font-size: 1.25rem; padding: 18px; }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .kpis .card { padding: 12px; text-align: center; }
+  h2 { font-size: 1rem; margin: 0 0 8px; }
+  #login { max-width: 360px; margin: 15vh auto 0; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <form id="login" class="card stack" hidden>
+    <h1>Staff login</h1>
+    <div><label for="pin">PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="current-password" required></div>
+    <div class="err" id="lerr"></div>
+    <button class="block">Sign in</button>
+  </form>
+
+  <div id="dash" class="stack" hidden>
+    <div class="row">
+      <div class="grow"><h1 id="qname">Queue</h1><span class="muted" id="openState"></span></div>
+      <button class="ghost sm" id="toggleOpen"></button>
+      <a href="/display" target="_blank"><button class="ghost sm">Display ↗</button></a>
+    </div>
+
+    <div class="card stack">
+      <div class="row">
+        <div class="grow"><label for="counter">Your counter / desk</label>
+          <input id="counter" placeholder="e.g. Counter 1, Table 4" maxlength="20"></div>
+      </div>
+      <button class="block big" id="next">Call next</button>
+      <div class="err" id="err"></div>
+    </div>
+
+    <div class="card" id="smsWarn" hidden style="border-color:var(--warn)">⚠ Text messages are <b>off</b>. Set the Twilio settings on the server to turn them on (see README).</div>
+
+    <div class="kpis">
+      <div class="card"><div class="stat" id="kWaiting">0</div><div class="muted">waiting</div></div>
+      <div class="card"><div class="stat" id="kServed">0</div><div class="muted">served (12h)</div></div>
+      <div class="card"><div class="stat" id="kAvg">–</div><div class="muted">avg / person</div></div>
+    </div>
+
+    <div class="card"><h2>Being served</h2><ul class="list" id="called"></ul></div>
+    <div class="card"><h2>Waiting</h2><ul class="list" id="waiting"></ul></div>
+    <div class="card"><h2>Recently finished</h2><ul class="list" id="recent"></ul></div>
+    <div class="row"><div class="grow"></div><button class="danger sm" id="reset">Reset queue (start from #1)</button></div>
+  </div>
+</main>
+<script>
+let PIN = sessionStorage.getItem('adminPin') || '';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ago = ts => { const m = Math.round((Date.now() - ts) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)}h ${m % 60}m ago`; };
+$('counter').value = localStorage.getItem('counter') || 'Counter 1';
+$('counter').addEventListener('input', e => localStorage.setItem('counter', e.target.value));
+
+async function api(path, body) {
+  const r = await fetch('/api/admin' + path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'x-admin-pin': PIN, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) { showLogin('Wrong PIN'); throw new Error('auth'); }
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Error');
+  return j;
+}
+
+function showLogin(msg) { $('dash').hidden = true; $('login').hidden = false; $('lerr').textContent = msg || ''; sessionStorage.removeItem('adminPin'); }
+$('login').addEventListener('submit', async e => {
+  e.preventDefault(); PIN = $('pin').value;
+  try { await load(); sessionStorage.setItem('adminPin', PIN); } catch (_) {}
+});
+
+const LABEL = { served: 'Served', noshow: 'No-show', left: 'Left', removed: 'Removed' };
+function item(t, actions) {
+  const meta = [t.track, t.transmission, t.phone, t.email, smsBadge(t), t.counter && t.status === 'called' ? `at ${t.counter}` : '', ago(t.calledAt && t.status === 'called' ? t.calledAt : t.createdAt)].filter(Boolean).map(esc).join(' · ');
+  return `<li><span class="num">${t.number}</span><span class="who">${esc(t.name)}<small>${meta}</small></span><span class="acts">${actions}</span></li>`;
+}
+const SMS_ICON = { sent: '✓', 'not-configured': '(SMS off)', failed: '⚠ failed', sending: '…' };
+const smsBadge = t => (t.sms || []).map(m => `text "${m.kind}" ${SMS_ICON[m.status] || m.status}`).join(', ');
+const btn = (id, action, label, cls = 'ghost') => `<button class="${cls} sm" data-id="${id}" data-action="${action}">${label}</button>`;
+
+async function load() {
+  const s = await api('/state');
+  $('login').hidden = true; $('dash').hidden = false;
+  $('qname').textContent = s.queueName;
+  $('openState').innerHTML = s.open ? '<span style="color:var(--ok)">●</span> Open — accepting new people' : '<span style="color:var(--danger)">●</span> Closed to new people';
+  $('toggleOpen').textContent = s.open ? 'Close queue' : 'Open queue';
+  $('toggleOpen').dataset.open = s.open;
+  $('kWaiting').textContent = s.waiting.length;
+  $('smsWarn').hidden = s.smsEnabled;
+  $('kServed').textContent = s.servedToday;
+  $('kAvg').textContent = Math.round(s.avgServiceSec / 60) + 'm';
+  $('next').textContent = s.waiting.length ? `Call next (#${s.waiting[0].number})` : 'Nobody waiting';
+  $('next').disabled = !s.waiting.length;
+  $('called').innerHTML = s.called.map(t => item(t, btn(t.id, 'recall', '🔔 Recall') + btn(t.id, 'serve', 'Done', '') + btn(t.id, 'noshow', 'No-show', 'danger'))).join('') || '<li class="muted">No one right now</li>';
+  $('waiting').innerHTML = s.waiting.map(t => item(t, btn(t.id, 'call', 'Call') + btn(t.id, 'remove', 'Remove', 'danger'))).join('') || '<li class="muted">Queue is empty</li>';
+  $('recent').innerHTML = s.recent.map(t => item(t, `<span class="pill">${LABEL[t.status] || t.status}</span>` + (t.status !== 'served' ? btn(t.id, 'requeue', 'Put back') : ''))).join('') || '<li class="muted">Nothing yet</li>';
+}
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('button[data-action]');
+  if (!b) return;
+  if (b.dataset.action === 'remove' && !confirm('Remove this person from the queue?')) return;
+  b.disabled = true;
+  try { await api(`/tickets/${b.dataset.id}/${b.dataset.action}`, { counter: $('counter').value }); } catch (x) { $('err').textContent = x.message; }
+});
+$('next').addEventListener('click', async () => {
+  $('next').disabled = true; $('err').textContent = '';
+  try { await api('/call-next', { counter: $('counter').value }); } catch (x) { $('err').textContent = x.message; }
+});
+$('toggleOpen').addEventListener('click', () => api('/open', { open: $('toggleOpen').dataset.open !== 'true' }));
+$('reset').addEventListener('click', () => { if (confirm('Clear everyone and restart numbering at #1?')) api('/reset', {}); });
+
+if (PIN) load().catch(() => {}); else showLogin();
+new EventSource('/events').onmessage = () => { if (!$('dash').hidden) load().catch(() => {}); };
+setInterval(() => { if (!$('dash').hidden) load().catch(() => {}); }, 30000);
+</script>
+</body>
+</html>
